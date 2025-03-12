@@ -1,0 +1,16 @@
+  model: "BERT"
+  vocab_size: 32768
+  n_layers: 12
+  max_seq_len: 128
+  d_model: 768
+  d_qkv: 64
+  n_heads: 12
+  ffn_geglu: True
+  ffn_hidden_size: 2048
+  tie_weights: True
+  dropout: 0.0
+  linear_bias: False
+  layernorm_bias: False
+  norm_layer: "SemanticPreLayerNorm"
+  use_rms: False
+  initializer_range: 0.002

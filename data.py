@@ -4,7 +4,7 @@ import torch
 import math
 import requests
 import pathlib
-from tqdm.auto import tqdm
+from tqdm.asyncio import tqdm
 import tarfile
 import numpy as np
 import random
@@ -12,14 +12,14 @@ import transformers
 from tokenizers import Tokenizer, decoders, models, normalizers, pre_tokenizers, trainers
 from webtext.archiver import Reader
 from itertools import chain, filterfalse
-from functional import seq
+from functional.streams import seq
 from collections import Counter
 from multiprocessing import Pool
 from mmap import mmap, ACCESS_READ
 
-WEBTEXT_URL = "https://the-eye.eu/public/AI/pile_preliminary_components/openwebtext2.jsonl.zst.tar"
-WEBTEXT_RAW_PATH = "webtext/openwebtext2.jsonl.zst.tar"
-WEBTEXT_EXTRACTED_FOLDER = "webtext/extracted"
+WEBTEXT_URL = "https://huggingface.co/datasets/ccss4/openwebtext2/resolve/main/openwebtext2.jsonl.zst.tar"
+WEBTEXT_RAW_PATH = "/mnt/fast1Tb_volume/datasets/webtext/openwebtext2.jsonl.zst.tar"
+WEBTEXT_EXTRACTED_FOLDER = "/mnt/fast1Tb_volume/datasets/webtext/extracted"
 BILLION = math.pow(10, 9)
 NUM_ENGLISH_WEBTEXT_DOCS = 13570754
 
@@ -35,7 +35,7 @@ def download_webtext(file_path=WEBTEXT_RAW_PATH, url=WEBTEXT_URL,
             raise Exception("Could not download webtext dataset.")
         total_size_in_bytes = int(res.headers.get("content-length", 0))
         block_size = 1024
-        progress_bar = tqdm.tqdm(total=total_size_in_bytes, unit="iB", unit_scale=True)
+        progress_bar = tqdm(total=total_size_in_bytes, unit="iB", unit_scale=True)
         with open(webtext, "wb") as f:
             for data in res.iter_content(block_size):
                 progress_bar.update(len(data))
@@ -50,7 +50,7 @@ def download_webtext(file_path=WEBTEXT_RAW_PATH, url=WEBTEXT_URL,
     with tarfile.open(webtext, "r") as tar:
         tar.extractall(extracted_folder)
     print("Successfully downloaded and extracted a total of " +\
-            len(glob.glob(extracted_folder + "/*jsonl.zst")) +\
+            str(len(glob.glob(extracted_folder + "/*jsonl.zst"))) +\
              " files.")
 
 """
@@ -81,7 +81,7 @@ def count_webtext_english_docs(extracted_dir=WEBTEXT_EXTRACTED_FOLDER):
     files = glob.glob(extracted_dir + "/*jsonl.zst")
     num_documents = 0
     reader = Reader()
-    for file_path in tqdm.tqdm(files):
+    for file_path in tqdm(files):
         documents = [{
             "document": document, 
             "metadata": metadata
@@ -94,9 +94,10 @@ def count_webtext_english_docs(extracted_dir=WEBTEXT_EXTRACTED_FOLDER):
 Train a tokenizer on the WebText dataset.
 See: https://huggingface.co/docs/tokenizers/quicktour
 """
-def train_tokenizer(file_path="webtext/tokenizer.json", extracted_dir=WEBTEXT_EXTRACTED_FOLDER, force=False):
+def train_tokenizer(file_path="/mnt/fast1Tb_volume/datasets/webtext/tokenizer.json", extracted_dir=WEBTEXT_EXTRACTED_FOLDER, force=False):
     tokenizer = Tokenizer(models.BPE(unk_token=None))
     tokenizer.normalizer = normalizers.NFC() # Relatively lossless normalization
+    #tokenizer.normalizer = normalizers.BertNormalizer(clean_text = True, handle_chinese_chars = True, strip_accents = None, lowercase = True) # Relatively lossless normalization
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(prefix_space=True)
     tokenizer.decoder = decoders.ByteLevel()
     if pathlib.Path(file_path).exists() and not force:
@@ -117,7 +118,7 @@ def train_tokenizer(file_path="webtext/tokenizer.json", extracted_dir=WEBTEXT_EX
         tokenizer.save(file_path)
     return tokenizer
 
-def load_tokenizer(file_path="webtext/tokenizer.json"):
+def load_tokenizer(file_path="/mnt/fast1Tb_volume/datasets/webtext/tokenizer.json"):
     plain_tokenizer = Tokenizer.from_file(file_path)
     fast_tokenizer = transformers.PreTrainedTokenizerFast(tokenizer_object=plain_tokenizer)
     # add special tokens
@@ -151,15 +152,15 @@ Returns 2-dimensional array of tokens, packed into 128-length sequences.
 See: https://openwebtext2.readthedocs.io/en/latest/
 """
 def load_and_prep_webtext(train_tokens=10 * BILLION, val_frac=0.01, max_seq_len=128, 
-                            train_npy_file="webtext/webtext_train.bin", val_npy_file="webtext/webtext_val.bin", force=False):
-    tokenizer = load_tokenizer(file_path="webtext/tokenizer.json")
+                            train_npy_file="/mnt/fast1Tb_volume/datasets/webtext/webtext_train.bin", val_npy_file="/mnt/fast1Tb_volume/datasets/webtext/webtext_val.bin", force=False):
+    tokenizer = load_tokenizer(file_path="/mnt/fast1Tb_volume/datasets/webtext/tokenizer.json")
     sep_token_id = tokenizer.convert_tokens_to_ids("[SEP]")
     train_file = open(train_npy_file, "wb+")
     val_file = open(val_npy_file, "wb+")
     total_tokens_needed = train_tokens + int(val_frac * train_tokens)
     total_tokens = 0
     document_count = 0
-    with tqdm.tqdm(total = total_tokens_needed) as pbar:
+    with tqdm(total = total_tokens_needed) as pbar:
         for batch in webtext_batch_iterator(extracted_dir=WEBTEXT_EXTRACTED_FOLDER, 
             batch_size=500, shuffle_files=True, english_only=True):
             document_count += len(batch)
@@ -312,5 +313,9 @@ class InMemoryBERTDataset(torch.utils.data.Dataset):
 
 if __name__ == "__main__":
     download_webtext()
-    load_and_prep_webtext(train_tokens=10 * BILLION)
+    train_tokenizer()
+    load_and_prep_webtext(train_tokens=20 * BILLION)
+
+    # split_dataset_file(dataset_file="/mnt/fast1Tb_volume/datasets/webtext/webtext_train.bin", 
+    #                    split_dir="/mnt/fast1Tb_volume/datasets/webtext/train_split/")
     

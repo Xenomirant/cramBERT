@@ -7,16 +7,16 @@ gpus: 1 # number of gpus to use
 train_workers: 6 # number of workers for train_dataloader
 
 # other training config
-use_amp: True
+use_amp: False
 use_checkpointing: False
 
 # data
-train_path: "/content/drive/My Drive/cramBERT/train_split/"
-val_path: "/content/drive/My Drive/cramBERT/webtext_val.bin"
-tokenizer_path: "/content/cramBERT/webtext/tokenizer.json"
+train_path: "/mnt/fast1Tb_volume/datasets/webtext/train_split/"
+val_path: "/mnt/fast1Tb_volume/datasets/webtext/webtext_val.bin"
+tokenizer_path: "/mnt/fast1Tb_volume/datasets/webtext/tokenizer.json"
 seq_len: 128
 in_memory: True
-micro_batch_size: 256 # 128 or 256 whatever fits in memory
+micro_batch_size: 64 # 128 or 256 whatever fits in memory
 max_batch_size: 4096 # recommended 4096
 anneal_batch_size: True # whether to anneal batch size
 batch_size_anneal_frac: 0.8 # what fraction of training examples to use for batch-size annealing
@@ -35,8 +35,8 @@ b2: 0.98
 weight_decay: 1.0e-2
 max_grad_norm: 0.5
 fused: False
-eight_bit: True
-loss_spike_mult_threshold: 1.2
+eight_bit: False
+loss_spike_mult_threshold: 1.5
 loss_spike_add_threshold: 0.75
 max_microbatch_skips: 10
 
@@ -46,6 +46,6 @@ wandb_project: "cramming"
 wandb_watch: True
 log_interval: 25
 val_interval: 1000
-save_interval: 1000
-save_dir: "/content/drive/My Drive/cramBERT/model_checkpoints/"
-recovery_ckpt_path: "/content/drive/My Drive/cramBERT/model_checkpoints/latest.pt"
+save_interval: 10000
+save_dir: "/mnt/fast1Tb_volume/cramBERT_checkpoints/"
+recovery_ckpt_path: "/mnt/fast1Tb_volume/cramBERT_checkpoints/latest.pt"

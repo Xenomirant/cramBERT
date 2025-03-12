@@ -20,7 +20,9 @@ import math
 from tqdm import tqdm
 import torch
 import torch.nn as nn
+import intel_extension_for_pytorch as ipex
 import numpy as np
+import pathlib
 from data import InMemoryBERTDataset, BERTDataset, load_tokenizer
 from dataclasses import dataclass
 from model import BERT, HuggingFaceRoBERTa, BERTConfig
@@ -92,7 +94,7 @@ class TrainConfig:
 
 def micro_batch_step(x, y, model, train_config, running_previous_loss):
     x, y = x.to(train_config.device), y.to(train_config.device)
-    with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=train_config.use_amp):
+    with torch.autocast(device_type='xpu', dtype=torch.float16, enabled=train_config.use_amp):
         micro_batch_loss = model(x, targets=y)
         if micro_batch_loss.item() > min(running_previous_loss * train_config.loss_spike_mult_threshold,
                                                 running_previous_loss + train_config.loss_spike_add_threshold):
@@ -109,6 +111,28 @@ def micro_batch_step(x, y, model, train_config, running_previous_loss):
 def step_optimizer():
     pass
 
+
+def read_isoscores() -> dict:
+    def get_last_line(filename):
+            try:
+                with open(filename, 'r') as f:
+                    lastline = float(deque(f, 1)[0])
+            except FileNotFoundError:
+                lastline = 0.0
+            return lastline
+
+    path = pathlib.Path("./logs/isoscore")
+    isoscores_dict = {}
+
+    for pt in path.rglob("*.score"):
+        if 0==pt.stat().st_size:
+            isoscores_dict[pt.as_posix()] = 0.0
+        else:
+            pt = pt.as_posix()
+            isoscores_dict[pt] = get_last_line(pt)
+    return isoscores_dict
+
+
 def evaluate_and_save_model(model, training_step, val_loader, train_config):
     model.eval()
     val_steps = 0
@@ -117,7 +141,7 @@ def evaluate_and_save_model(model, training_step, val_loader, train_config):
     with torch.no_grad():
         for x, y in val_loader:
             val_steps += 1
-            with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=train_config.use_amp):
+            with torch.autocast(device_type='xpu', dtype=torch.float16, enabled=train_config.use_amp):
                 x, y = x.to(train_config.device), y.to(train_config.device)
                 loss = model(x, targets=y)
                 val_loss += loss.item()
@@ -134,9 +158,10 @@ def evaluate_and_save_model(model, training_step, val_loader, train_config):
     torch.save(model.state_dict(), train_config.recovery_ckpt_path)
     model.train()
     del x, y, loss
-    return val_loss.item()
+    return val_loss
 
 def train_bert(bert_config, train_config):
+    
     print(f"BERT Config: {bert_config}")
     print(f"Train Config: {train_config}")
 
@@ -157,16 +182,16 @@ def train_bert(bert_config, train_config):
         train_files = sorted(glob.glob(os.path.join(train_config.train_path, "*.bin")))
     else:
         train_files = [train_config.train_path]
-    train_config.batch_size_schedule = get_batch_size_schedule(train_config)
+    train_config.batch_size_schedule = get_batch_size_schedule(train_config, train_files)
     train_config.total_steps = len(train_config.batch_size_schedule)
     train_config.total_microbatches = int(np.sum(train_config.batch_size_schedule) // train_config.micro_batch_size)
     print(f"Training for {train_config.total_steps} steps.")
     
     # Initialize model
-    num_gpus = min(train_config.gpus, torch.cuda.device_count())
+    num_gpus = min(train_config.gpus, torch.xpu.device_count())
     if num_gpus > 1:
         raise NotImplementedError("Multi-GPU training not implemented.")
-    device = torch.device('cuda' if torch.cuda.is_available() and num_gpus > 0 else 'cpu')
+    device = torch.device('xpu' if torch.xpu.is_available() and num_gpus > 0 else 'cpu')
     if bert_config.model == "BERT":
         model = BERT(bert_config)
     elif train_config.model == "RoBERTa":
@@ -182,7 +207,7 @@ def train_bert(bert_config, train_config):
 
     # Initialize optimizer, scheduler, and scaler
     optimizer, scheduler = get_optimizer_and_scheduler(model, train_config)
-    scaler = torch.cuda.amp.GradScaler(enabled=train_config.use_amp)
+    scaler = torch.amp.GradScaler(device="xpu", enabled=train_config.use_amp)
 
     # Initialize wandb
     if train_config.use_wandb:
@@ -207,7 +232,7 @@ def train_bert(bert_config, train_config):
         train_seqs_so_far = 0
         for train_file in train_files:
             print("Training on file: ", train_file)
-            del train_dataset
+            # del train_dataset
             del train_loader
             if train_seqs_so_far >= train_config.max_train_seqs:
                 break
@@ -256,13 +281,16 @@ def train_bert(bert_config, train_config):
                     
                     # Update previous loss using exponential moving average
                     running_previous_loss = running_previous_loss * 0.5 + running_batch_loss * 0.5
+
+                    isoscores_dict = read_isoscores()
                     
                     # Handle logging and validation
                     if train_config.use_wandb:
                         wandb.log({
                             "batch_train_loss": running_batch_loss,
                             "lr": scheduler.get_last_lr()[0],
-                            "batch_size": train_config.batch_size_schedule[training_step]
+                            "batch_size": train_config.batch_size_schedule[training_step],
+                            **isoscores_dict
                         })
                     if training_step % train_config.log_interval == 0:
                         print(f"Step {training_step} | Train loss: {running_batch_loss:.4f} | LR: {scheduler.get_last_lr()[0]:.5f} | Batch size: {train_config.batch_size_schedule[training_step]}")
@@ -293,7 +321,8 @@ def train_bert(bert_config, train_config):
             wandb.log({
                 "batch_train_loss": running_batch_loss,
                 "lr": scheduler.get_last_lr()[0],
-                "batch_size": train_config.batch_size_schedule[training_step]
+                "batch_size": train_config.batch_size_schedule[training_step],
+                **isoscores_dict
             })
         print(f"Step {training_step} | Train loss: {running_batch_loss:.4f} | LR: {scheduler.get_last_lr()[0]:.5f} | Batch size: {train_config.batch_size_schedule[training_step]}")
     if train_config.do_eval:

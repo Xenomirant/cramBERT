@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from layers import TransformerBlock, LayerNorm
+from layers import TransformerBlock, LayerNorm, EmbeddingSemanticNorm
 import bitsandbytes as bnb
 import transformers
 # TODO: add dropout for finetuning
@@ -23,6 +23,8 @@ class BERTConfig:
     dropout: float
     linear_bias: bool
     layernorm_bias: bool
+    norm_layer: str = "PreLayerNorm"
+    use_rms: bool = False
     initializer_range: float = 0.02
     checkpoint_path: str = None
 
@@ -43,9 +45,15 @@ class BERT(nn.Module):
         self.vocab_size = config.vocab_size
         self.d_model = config.d_model
         self.max_seq_len = config.max_seq_len
-        self.token_emb = bnb.nn.StableEmbedding(config.vocab_size, config.d_model)
-        self.pos_emb = nn.Parameter(torch.zeros(1, config.max_seq_len, config.d_model))
-        self.emb_norm = LayerNorm(config.d_model, weight=True, bias=False)
+        self.use_rms = config.use_rms
+        # self.token_emb = nn.Embedding(config.vocab_size, config.d_model)
+        # self.pos_emb = nn.Parameter(torch.zeros(1, config.max_seq_len, config.d_model))
+        # self.emb_norm = LayerNorm(config.d_model, weight=True, bias=False)
+        self.sem_norm = EmbeddingSemanticNorm(
+            vocab_size=config.vocab_size, 
+            d_model=config.d_model, 
+            max_seq_len=config.max_seq_len, 
+            use_rms=config.use_rms)
         self.emb_dropout = nn.Dropout(config.dropout)
         self.blocks = nn.ModuleList([TransformerBlock(
             config.d_model, 
@@ -53,7 +61,9 @@ class BERT(nn.Module):
             config.n_heads, 
             config.ffn_geglu,
             config.ffn_hidden_size,
-            dropout=config.dropout
+            dropout=config.dropout,
+            use_rms=config.use_rms,
+            norm_layer=config.norm_layer,
         ) for _ in range(config.n_layers)])
         self.norm = LayerNorm(config.d_model, weight=True, bias=False)
         self.fc = nn.Linear(config.d_model, config.vocab_size, bias=False)
@@ -61,10 +71,10 @@ class BERT(nn.Module):
         self.tie_weights = config.tie_weights
 
         if config.tie_weights:
-            self.fc.weight = self.token_emb.weight
+            self.fc.weight = self.sem_norm.token_emb.weight
 
-        n_params = (sum(p.numel() for p in self.token_emb.parameters()) +
-                    self.pos_emb.numel() +
+        n_params = (sum(p.numel() for p in self.sem_norm.token_emb.parameters()) +
+                    self.sem_norm.pos_emb.numel() +
                     sum(p.numel() for p in self.blocks.parameters()) +
                     sum(p.numel() for p in self.norm.parameters()) +
                     sum(p.numel() for p in self.fc.parameters())
@@ -122,10 +132,11 @@ class BERT(nn.Module):
 
     # Targets must be masked with -100 at non-masked indices that should be ignored
     def forward(self, X, targets=None, mask=None):
-        token_embs = self.token_emb(X)
-        pos_embs = self.pos_emb[:, :X.shape[1], :]
-        X = self.token_emb(X) + self.pos_emb[:, :X.shape[1], :]
-        X = self.emb_norm(X) # bnb.nn.StableEmbedding already has LayerNorm, but I trained the model with this, so better leave it
+        # token_embs = self.token_emb(X)
+        # pos_embs = self.pos_emb[:, :X.shape[1], :]
+        # X = self.token_emb(X) + self.pos_emb[:, :X.shape[1], :]
+        # X = self.emb_norm(X) # bnb.nn.StableEmbedding already has LayerNorm, but I trained the model with this, so better leave it
+        X = self.sem_norm(X)
         X = self.emb_dropout(X)
         for block in self.blocks:
             X = block(X, mask=mask)

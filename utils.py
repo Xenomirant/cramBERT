@@ -11,8 +11,8 @@ def get_batch_size_schedule(train_config, train_files):
     Returns:
         batch_size_schedule (list): The batch size schedule.
     """
-    n_train_seqs = sum([os.path.getsize(f) // bytes_per_seq for f in train_files])
     bytes_per_seq = train_config.seq_len * 2
+    n_train_seqs = sum([os.path.getsize(f) // bytes_per_seq for f in train_files])
     n_train_seqs = min(n_train_seqs, train_config.max_train_seqs)
     n_train_seq_steps = n_train_seqs * train_config.epochs
     
@@ -38,7 +38,7 @@ def get_optimizer_and_scheduler(model, train_config):
     Returns:
         optimizer (torch.optim.Optimizer): The optimizer.
     """
-     assert train_config.optimizer in ["Adam", "AdamW"], "Only Adam and AdamW optimizers currently supported."
+    assert train_config.optimizer in ["Adam", "AdamW"], "Only Adam and AdamW optimizers currently supported."
     # group parameters by weight decay
     # https://github.com/karpathy/nanoGPT/blob/master/model.py
     # https://github.com/JonasGeiping/cramming/blob/main/cramming/backend/utils.py
